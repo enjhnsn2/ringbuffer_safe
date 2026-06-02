@@ -3,6 +3,18 @@
 // Copyright Tock Contributors 2022.
 
 flux_rs::defs! {
+    fn set_emp() -> Set<int> {
+        set_empty(0)
+    }
+
+    fn set_add(x: int, s: Set<int>) -> Set<int> {
+        set_union(set_singleton(x), s)
+    }
+
+    fn set_del(x: int, s: Set<int>) -> Set<int> {
+        set_difference(s, set_singleton(x))
+    }
+
     fn rb_len(rb: RingBuffer) -> int {
         if rb.tl > rb.hd { rb.tl - rb.hd }
         else if rb.tl < rb.hd { rb.ring.len - rb.hd + rb.tl }
@@ -38,27 +50,32 @@ mod flux_specs {
 // ===== FluxSlice =====
 
 #[flux_rs::opaque]
-#[flux_rs::refined_by(len: int, get: int -> bool)]
+#[flux_rs::refined_by(len: int, inits: Set<int>)]
 #[repr(transparent)]
-pub struct FluxSlice<T>([T]);
-
-impl<T> FluxSlice<T> {
+pub struct FluxSlice<'a, T>(&'a mut [T]);
+    
+impl<'a, T> FluxSlice<'a, T> {
     #[flux_rs::trusted]
     #[flux_rs::sig(fn(&mut [T][@n]) -> &mut FluxSlice<T>{fs: fs.len == n})]
-    pub fn from_mut(slice: &mut [T]) -> &mut FluxSlice<T> {
+    pub fn from_mut(slice: &'a mut [T]) -> &mut FluxSlice<'a, T> {
         // SAFETY: FluxSlice<T> is repr(transparent) over [T]
-        unsafe { &mut *(slice as *mut [T] as *mut FluxSlice<T>) }
+        unsafe { &mut *(slice as *mut [T] as *mut FluxSlice<'a, T>) }
     }
 
     #[flux_rs::trusted]
-    #[flux_rs::sig(fn(&FluxSlice<T>[@n, @f]) -> usize[n])]
+    #[flux_rs::sig(fn(&FluxSlice<T>[@n, @s]) -> usize[n])]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     #[flux_rs::trusted]
-    #[flux_rs::sig(fn(&FluxSlice<T>[@n, @f], index: usize{index < n}) -> T)]
-    pub fn get(&self, index: usize) -> T
+    #[flux_rs::sig(
+        fn(self: &mut FluxSlice<T>[@n, @s], index: RbIndex{index < n})
+        -> T
+        requires set_is_in(index, s)
+        ensures self: FluxSlice<T>[n, set_del(index, s)]
+    )]
+    pub fn take(&mut self, index: RbIndex) -> T
     where
         T: Copy,
     {
@@ -67,33 +84,36 @@ impl<T> FluxSlice<T> {
 
     #[flux_rs::trusted]
     #[flux_rs::sig(
-        fn(self: &mut FluxSlice<T>[@n, @f], index: usize{index < n}, val: T)
-        ensures self: FluxSlice<T>[n, |j| j == index || f(j)]
+        fn(self: &mut FluxSlice<T>[@n, @s], index: RbIndex{index < n}, val: T)
+        requires !set_is_in(index, s)
+        ensures self: FluxSlice<T>[n, set_add(index, s)]
     )]
-    pub fn set(&mut self, index: usize, val: T) {
+    pub fn set(&mut self, index: RbIndex, val: T) {
         self.0[index] = val;
     }
 }
 
 
 // ===== RingBuffer =====
-#[flux::alias(type RbIndex(n: int) = usize{v: n < v})]
 type RbIndex = usize;
-
 #[flux_rs::refined_by(ring: FluxSlice, hd: int, tl: int)]
-pub struct RingBuffer<'a, T: Copy + 'a> {
-    #[flux_rs::field({&mut FluxSlice<T>[ring] | ring.len > 0})]
-    ring: &'a mut FluxSlice<T>,
-    #[flux_rs::field(RbIndex(ring.len)[hd])]
+
+#[flux_rs::invariant(hd == tl => ring.inits == set_emp())] // when Rb is empty, inits is empty
+#[flux_rs::invariant(hd != tl => set_is_in(hd, ring.inits))] // when Rb is not empty, head is in the set
+#[flux_rs::invariant(!set_is_in(tl, ring.inits))] // tail is never in the set
+pub struct RingBuffer<'a, T: Copy> {
+    #[flux_rs::field({FluxSlice<T>[ring] | ring.len > 0})]
+    ring: FluxSlice<'a, T>,
+    #[flux_rs::field({RbIndex[hd] | hd < ring.len})]
     head: RbIndex,
-    #[flux_rs::field(RbIndex(ring.len)[tl])]
+    #[flux_rs::field({RbIndex[tl] | tl < ring.len})]
     tail: RbIndex,
 }
 
 impl<'a, T: Copy> RingBuffer<'a, T> {
     // Done
-    #[flux_rs::sig(fn({&mut FluxSlice<T>[@ring] | ring.len > 0}) -> RingBuffer<T>[ring, 0, 0])]
-    pub fn new(ring: &'a mut FluxSlice<T>) -> RingBuffer<'a, T> {
+    #[flux_rs::sig(fn({FluxSlice<T>[@ring] | ring.len > 0 && ring.inits == set_emp()}) -> RingBuffer<T>[ring, 0, 0])]
+    pub fn new(ring: FluxSlice<T>) -> RingBuffer<T> {
         RingBuffer {
             head: 0,
             tail: 0,
@@ -133,17 +153,7 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
         position_in_ring < self.len()
     }
 
-    // #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex{index < s.ring.len}) -> Option<T>{r: r => s.ring.init(index)})]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex{index < s.ring.len}) -> Option<T>)]
-    fn get_internal(&self, index: RbIndex) -> Option<T> {
-        if !self.is_valid(index) {
-            None
-        } else {
-            Some(self.ring.get(index))
-        }
-    }
-
-    #[flux_rs::trusted]
+    // #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s], val: T) -> bool ensures self: RingBuffer<T>)]
     pub fn enqueue(&mut self, val: T) -> bool {
         if self.is_full() {
@@ -155,12 +165,13 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
         }
     }
 
+    #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s]) -> Option<T> ensures self: RingBuffer<T>)]
     pub fn dequeue(&mut self) -> Option<T> {
-        if self.head != self.tail {
-            let val = self.get_internal(self.head);
+        if self.has_elements() {
+            let val = self.ring.take(self.head);
             self.head = (self.head + 1) % self.ring.len();
-            val
+            Some(val)
         } else {
             None
         }
