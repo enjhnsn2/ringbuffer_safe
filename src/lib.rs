@@ -29,6 +29,10 @@ flux_rs::defs! {
         rb.hd == rb.tl
     }
 
+    fn rb_next(rb: RingBuffer, index: int) -> int {
+        (index + 1) % rb.ring.len
+    }
+
     fn rb_is_valid(rb: RingBuffer, index: int) -> bool {
         ((index + rb.ring.len - rb.hd) % rb.ring.len) < rb_len(rb)
     }
@@ -153,22 +157,36 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
         position_in_ring < self.len()
     }
 
+    #[flux_rs::trusted]
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
+        requires !rb_is_full(s)
+        ensures !set_is_in(rb_next(s, s.tl), s.ring.inits))]
+    fn lemma_next_uninit(&self) {}
+
+    #[flux_rs::trusted]
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
+        requires rb_len(s) > 1
+        ensures set_is_in(rb_next(s, s.hd), s.ring.inits))]
+    fn lemma_next_init(&self) {}
+
     // #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s], val: T) -> bool ensures self: RingBuffer<T>)]
     pub fn enqueue(&mut self, val: T) -> bool {
         if self.is_full() {
             false
         } else {
+            self.lemma_next_uninit();
             self.ring.set(self.tail, val);
             self.tail = (self.tail + 1) % self.ring.len();
             true
         }
     }
 
-    #[flux_rs::trusted]
+    // #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s]) -> Option<T> ensures self: RingBuffer<T>)]
     pub fn dequeue(&mut self) -> Option<T> {
         if self.has_elements() {
+            self.lemma_next_init();
             let val = self.ring.take(self.head);
             self.head = (self.head + 1) % self.ring.len();
             Some(val)
