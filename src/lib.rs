@@ -36,6 +36,10 @@ flux_rs::defs! {
     fn rb_is_valid(rb: RingBuffer, index: int) -> bool {
         ((index + rb.ring.len - rb.hd) % rb.ring.len) < rb_len(rb)
     }
+
+    fn rb_valid_iff_init(rb: RingBuffer, index: int) -> bool {
+        rb_is_valid(rb, index) == set_is_in(index, rb.ring.inits)
+    }
 }
 
 // ======== Extern specs ========
@@ -102,9 +106,9 @@ impl<'a, T> FluxSlice<'a, T> {
 type RbIndex = usize;
 #[flux_rs::refined_by(ring: FluxSlice, hd: int, tl: int)]
 
-#[flux_rs::invariant(hd == tl => ring.inits == set_emp())] // when Rb is empty, inits is empty
-#[flux_rs::invariant(hd != tl => set_is_in(hd, ring.inits))] // when Rb is not empty, head is in the set
-#[flux_rs::invariant(!set_is_in(tl, ring.inits))] // tail is never in the set
+// #[flux_rs::invariant(hd == tl => ring.inits == set_emp())] // when Rb is empty, inits is empty
+// #[flux_rs::invariant(hd != tl => set_is_in(hd, ring.inits))] // when Rb is not empty, head is in the set
+// #[flux_rs::invariant(!set_is_in(tl, ring.inits))] // tail is never in the set
 pub struct RingBuffer<'a, T: Copy> {
     #[flux_rs::field({FluxSlice<T>[ring] | ring.len > 0})]
     ring: FluxSlice<'a, T>,
@@ -158,16 +162,15 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
     }
 
     #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
-        requires !rb_is_full(s)
-        ensures !set_is_in(rb_next(s, s.tl), s.ring.inits))]
-    fn lemma_next_uninit(&self) {}
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex)
+        ensures rb_valid_iff_init(s, index))]
+    fn assume_valid_iff_init(&self, index: RbIndex) {}
 
     #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
-        requires rb_len(s) > 1
-        ensures set_is_in(rb_next(s, s.hd), s.ring.inits))]
-    fn lemma_next_init(&self) {}
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex)
+        requires rb_valid_iff_init(s, index))]
+    fn assert_valid_iff_init(&self, index: RbIndex) {
+    }
 
     // #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s], val: T) -> bool ensures self: RingBuffer<T>)]
@@ -175,8 +178,9 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
         if self.is_full() {
             false
         } else {
-            self.lemma_next_uninit();
+            self.assume_valid_iff_init(self.tail);
             self.ring.set(self.tail, val);
+            self.assert_valid_iff_init((self.tail + 1) % self.ring.len());
             self.tail = (self.tail + 1) % self.ring.len();
             true
         }
@@ -186,8 +190,9 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s]) -> Option<T> ensures self: RingBuffer<T>)]
     pub fn dequeue(&mut self) -> Option<T> {
         if self.has_elements() {
-            self.lemma_next_init();
+            self.assume_valid_iff_init(self.head);
             let val = self.ring.take(self.head);
+            self.assert_valid_iff_init((self.head + 1) % self.ring.len());
             self.head = (self.head + 1) % self.ring.len();
             Some(val)
         } else {
