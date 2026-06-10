@@ -169,8 +169,21 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
     #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex)
         requires rb_valid_iff_init(s, index))]
-    fn assert_valid_iff_init(&self, index: RbIndex) {
-    }
+    fn assert_valid_iff_init(&self, index: RbIndex) {}
+
+    #[flux_rs::trusted]
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
+        requires !rb_is_full(s)
+        ensures !set_is_in(rb_next(s, s.tl), s.ring.inits))]
+    fn lemma_next_uninit(&self) {}
+
+    #[flux_rs::trusted]
+    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
+        requires !rb_is_empty(s)
+        ensures rb_len(s) > 1 => set_is_in(rb_next(s, s.hd), s.ring.inits)
+             && rb_len(s) > 1 => rb_is_valid(s, rb_next(s, s.hd))
+             && rb_len(s) == 1 => set_del(s.hd, s.ring.inits) == set_emp())]
+    fn lemma_next_init(&self) {}
 
     // #[flux_rs::trusted]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s], val: T) -> bool ensures self: RingBuffer<T>)]
@@ -179,6 +192,7 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
             false
         } else {
             self.assume_valid_iff_init(self.tail);
+            self.lemma_next_uninit();
             self.ring.set(self.tail, val);
             self.assert_valid_iff_init((self.tail + 1) % self.ring.len());
             self.tail = (self.tail + 1) % self.ring.len();
@@ -191,6 +205,7 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
     pub fn dequeue(&mut self) -> Option<T> {
         if self.has_elements() {
             self.assume_valid_iff_init(self.head);
+            self.lemma_next_init();
             let val = self.ring.take(self.head);
             self.assert_valid_iff_init((self.head + 1) % self.ring.len());
             self.head = (self.head + 1) % self.ring.len();
