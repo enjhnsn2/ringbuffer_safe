@@ -3,16 +3,16 @@
 // Copyright Tock Contributors 2022.
 
 flux_rs::defs! {
-    fn set_emp() -> Set<int> {
-        set_empty(0)
+    fn map_emp() -> Map<int, bool> {
+        map_default(false)
     }
 
-    fn set_add(x: int, s: Set<int>) -> Set<int> {
-        set_union(set_singleton(x), s)
+    fn map_add(x: int, m: Map<int, bool>) -> Map<int, bool> {
+        map_store(m, x, true)
     }
 
-    fn set_del(x: int, s: Set<int>) -> Set<int> {
-        set_difference(s, set_singleton(x))
+    fn map_del(x: int, m: Map<int, bool>) -> Map<int, bool> {
+        map_store(m, x, false)
     }
 
     fn rb_len(rb: RingBuffer) -> int {
@@ -37,9 +37,8 @@ flux_rs::defs! {
         ((index + rb.ring.len - rb.hd) % rb.ring.len) < rb_len(rb)
     }
 
-    fn rb_valid_iff_init(rb: RingBuffer, index: int) -> bool {
-        rb_is_valid(rb, index) == set_is_in(index, rb.ring.inits)
-    }
+    // forall idx. idx < s.ring.len && is_valid(idx) => s.ring.init(idx)
+    fn rb_valid_iff_init(ring: FluxSlice, hd: int, tl: int) -> bool;
 }
 
 // ======== Extern specs ========
@@ -58,7 +57,7 @@ mod flux_specs {
 // ===== FluxSlice =====
 
 #[flux_rs::opaque]
-#[flux_rs::refined_by(len: int, inits: Set<int>)]
+#[flux_rs::refined_by(len: int, inits: Map<int, bool>)]
 #[repr(transparent)]
 pub struct FluxSlice<'a, T>(&'a mut [T]);
     
@@ -80,8 +79,8 @@ impl<'a, T> FluxSlice<'a, T> {
     #[flux_rs::sig(
         fn(self: &mut FluxSlice<T>[@n, @s], index: RbIndex{index < n})
         -> T
-        requires set_is_in(index, s)
-        ensures self: FluxSlice<T>[n, set_del(index, s)]
+        requires map_select(s, index)
+        ensures self: FluxSlice<T>[n, map_del(index, s)]
     )]
     pub fn take(&mut self, index: RbIndex) -> T
     where
@@ -93,8 +92,8 @@ impl<'a, T> FluxSlice<'a, T> {
     #[flux_rs::trusted]
     #[flux_rs::sig(
         fn(self: &mut FluxSlice<T>[@n, @s], index: RbIndex{index < n}, val: T)
-        requires !set_is_in(index, s)
-        ensures self: FluxSlice<T>[n, set_add(index, s)]
+        requires !map_select(s, index)
+        ensures self: FluxSlice<T>[n, map_add(index, s)]
     )]
     pub fn set(&mut self, index: RbIndex, val: T) {
         self.0[index] = val;
@@ -104,8 +103,8 @@ impl<'a, T> FluxSlice<'a, T> {
 
 // ===== RingBuffer =====
 type RbIndex = usize;
+#[flux_rs::invariant(rb_valid_iff_init(ring, hd, tl))]
 #[flux_rs::refined_by(ring: FluxSlice, hd: int, tl: int)]
-
 // #[flux_rs::invariant(hd == tl => ring.inits == set_emp())] // when Rb is empty, inits is empty
 // #[flux_rs::invariant(hd != tl => set_is_in(hd, ring.inits))] // when Rb is not empty, head is in the set
 // #[flux_rs::invariant(!set_is_in(tl, ring.inits))] // tail is never in the set
@@ -120,7 +119,8 @@ pub struct RingBuffer<'a, T: Copy> {
 
 impl<'a, T: Copy> RingBuffer<'a, T> {
     // Done
-    #[flux_rs::sig(fn({FluxSlice<T>[@ring] | ring.len > 0 && ring.inits == set_emp()}) -> RingBuffer<T>[ring, 0, 0])]
+    #[flux_rs::proven_externally]
+    #[flux_rs::sig(fn({FluxSlice<T>[@ring] | ring.len > 0 && ring.inits == map_emp()}) -> RingBuffer<T>[ring, 0, 0])]
     pub fn new(ring: FluxSlice<T>) -> RingBuffer<T> {
         RingBuffer {
             head: 0,
@@ -161,53 +161,31 @@ impl<'a, T: Copy> RingBuffer<'a, T> {
         position_in_ring < self.len()
     }
 
-    #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex)
-        ensures rb_valid_iff_init(s, index))]
-    fn assume_valid_iff_init(&self, index: RbIndex) {}
-
-    #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s], index: RbIndex)
-        requires rb_valid_iff_init(s, index))]
-    fn assert_valid_iff_init(&self, index: RbIndex) {}
-
-    #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
-        requires !rb_is_full(s)
-        ensures !set_is_in(rb_next(s, s.tl), s.ring.inits))]
-    fn lemma_next_uninit(&self) {}
-
-    #[flux_rs::trusted]
-    #[flux_rs::sig(fn(self: &RingBuffer<T>[@s])
-        requires !rb_is_empty(s)
-        ensures rb_len(s) > 1 => set_is_in(rb_next(s, s.hd), s.ring.inits)
-             && rb_len(s) > 1 => rb_is_valid(s, rb_next(s, s.hd))
-             && rb_len(s) == 1 => set_del(s.hd, s.ring.inits) == set_emp())]
-    fn lemma_next_init(&self) {}
-
     // #[flux_rs::trusted]
+    #[flux_rs::proven_externally]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s], val: T) -> bool ensures self: RingBuffer<T>)]
     pub fn enqueue(&mut self, val: T) -> bool {
         if self.is_full() {
             false
         } else {
-            self.assume_valid_iff_init(self.tail);
-            self.lemma_next_uninit();
+            // self.assume_valid_iff_init(self.tail);
+            // self.lemma_next_uninit();
             self.ring.set(self.tail, val);
-            self.assert_valid_iff_init((self.tail + 1) % self.ring.len());
+            // self.assert_valid_iff_init((self.tail + 1) % self.ring.len());
             self.tail = (self.tail + 1) % self.ring.len();
             true
         }
     }
 
     // #[flux_rs::trusted]
+    #[flux_rs::proven_externally]
     #[flux_rs::sig(fn(self: &strg RingBuffer<T>[@s]) -> Option<T> ensures self: RingBuffer<T>)]
     pub fn dequeue(&mut self) -> Option<T> {
         if self.has_elements() {
-            self.assume_valid_iff_init(self.head);
-            self.lemma_next_init();
+            // self.assume_valid_iff_init(self.head);
+            // self.lemma_next_init();
             let val = self.ring.take(self.head);
-            self.assert_valid_iff_init((self.head + 1) % self.ring.len());
+            // self.assert_valid_iff_init((self.head + 1) % self.ring.len());
             self.head = (self.head + 1) % self.ring.len();
             Some(val)
         } else {

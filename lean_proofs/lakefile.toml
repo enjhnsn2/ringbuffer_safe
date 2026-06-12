@@ -1,0 +1,17 @@
+name = "lean_proofs"
+version = "0.1.0"
+defaultTargets = ["LeanProofs"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "v4.28.0"
+
+[[lean_lib]]
+name = "LeanProofs"
+
+[[lean_lib]]
+name = "Lemmas"
+
+[[lean_lib]]
+name = "Tactics"
