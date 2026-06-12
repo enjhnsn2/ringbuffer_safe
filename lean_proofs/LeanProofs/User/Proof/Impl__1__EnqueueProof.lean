@@ -1,6 +1,8 @@
 import LeanProofs.Flux.Prelude
 import LeanProofs.Flux.VC.Impl__1__Enqueue
+import ModLemmas
 import Lemmas
+import RbLemmas
 import Tactics
 import Mathlib
 open Classical
@@ -8,47 +10,6 @@ set_option linter.unusedVariables false
 
 
 namespace F
-
-theorem mod_non_neg (a b : Int) : 0 < b -> 0 <= (a % b) := by
-  intro h
-  exact Int.emod_nonneg a (by omega)
-
-theorem mod_lt (a b : Int) : 0 < b -> (a % b) < b := by
-  intro h
-  exact Int.emod_lt_of_pos a h
-
-
-theorem rb_mod_self (len idx : Int) (hlo : 0 ≤ idx) (hhi : idx < len) :
-    idx % len = idx :=
-  Int.emod_eq_of_lt hlo hhi
-
-theorem rb_distinct_pos (len hd idx tl : Int)
-    (hlen : 0 < len)
-    (hidx_lo : 0 ≤ idx) (hidx_hi : idx < len)
-    (htl_lo : 0 ≤ tl) (htl_hi : tl < len)
-    (hne : idx ≠ tl) :
-    (idx + len - hd) % len ≠ (tl + len - hd) % len := by
-  intro h
-
-  have midx : idx % len = idx := rb_mod_self len idx hidx_lo hidx_hi
-  have mtl  : tl  % len = tl  := rb_mod_self len tl  htl_lo  htl_hi
-
-  have hshift :
-      Int.ModEq len (idx + (len - hd)) (tl + (len - hd)) := by
-    simpa [Int.ModEq, sub_eq_add_neg, add_assoc] using h
-
-  have hcong : Int.ModEq len idx tl :=
-    Int.ModEq.add_right_cancel' (len - hd) hshift
-
-  have heq : idx = tl := by
-    calc
-      idx = idx % len := midx.symm
-      _ = tl % len := Int.ModEq.eq hcong
-      _ = tl := mtl
-
-  contradiction
-
-
 
 -- After enqueue, the occupied count increases by exactly one.
 -- Requires the buffer is not full (hd ≠ (tl+1)%len).

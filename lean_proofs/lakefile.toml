@@ -15,3 +15,9 @@ name = "Lemmas"
 
 [[lean_lib]]
 name = "Tactics"
+
+[[lean_lib]]
+name = "ModLemmas"
+
+[[lean_lib]]
+name = "RbLemmas"
